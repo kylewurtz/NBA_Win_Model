@@ -1,0 +1,201 @@
+---
+title: "Predict Outcome of NBA Game"
+author: "kyle wurtz"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    theme: yeti
+    code_folding: show
+---
+
+## Overview
+This file will take the output of models built elsewhere to predict the outcome of a given NBA game.
+
+## Setup
+### Load Packages
+```{r load packages, warning = FALSE, message = FALSE}
+require(tidyverse)
+require(magrittr)
+require(scales)
+require(ggthemes)
+require(stringr)
+require(lubridate)
+```
+
+### Set Up Root Folder
+```{r setup, include=FALSE}
+require(knitr)
+require(rprojroot)
+opts_knit$set(root.dir = rprojroot::find_root("NBA_Win_Model.Rproj"))
+```
+
+## Work
+To predict the outcome of an NBA game, I'll leverage three high-level components: a pre-game prediction, an in-game prediction, and a credibility metric to assign weight to the two predictions.  To begin with, my models will be *extremely* simple. This is deliberate, as I'll be taking an agile-ish approach to this work: I'll start with laughably simple models and iterate frequently with small updates.
+
+### Pre-Game Prediction
+#### Version 1
+The pre-game prediction model will require the most work of the three components. To begin with, the "model" will only be a function of the two teams' winning percentages. This model will predict the probability that the home team wins the game, so the pre-game prediction model in version 1 will be: 0.5 + Home Team's Winning % - Away Team's Winning %. The winning percentages will be taken from the current season just prior to the start of the game.
+
+##### Load Game Outcome Data
+Data copied from Basketball Reference for the 2016-17 season through March: http://www.basketball-reference.com/leagues/NBA_2017_games-march.html.
+
+```{r read in and clean up bbref results data}
+results_1617 = read_csv("Data/Input/Pre_Game_Model/Results_2017.csv")
+
+month_abbrevs = tibble(
+  abbrev = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
+  month_num_str = str_pad(1:12, 2, pad = "0")
+)
+
+results_1617 %<>% 
+  mutate(
+    Home_Win = ifelse(Home_Score > Away_Score, 1, 0),
+    Winning_Team = ifelse(Home_Win == 1, Home, Away),
+    Losing_Team = ifelse(Home_Win == 1, Away, Home)
+  ) %>% 
+  separate(
+    Date,
+    c("Day_of_Week", "Month", "Day_Of_Month", "Year")
+  ) %>% 
+  left_join(
+    month_abbrevs,
+    by = c("Month" = "abbrev")
+  ) %>% 
+  mutate(date = ymd(paste0(Year, month_num_str, Day_Of_Month))) %>% 
+  select(date, Away:Losing_Team)
+
+teams = sort(unique(results_1617$Home))
+```
+
+##### Create Function to Get Records Through a Given Date
+```{r function to calculate results through a given date}
+records_through_dt = function(df, eval_date) {
+  df %<>% filter(date <= eval_date)
+  df %>% 
+    count(Winning_Team) %>% 
+    rename(team = Winning_Team,
+           wins = n) %>% 
+    full_join(
+      df %>% 
+        count(Losing_Team) %>% 
+        rename(team = Losing_Team,
+               losses = n)
+    ) %>% 
+    replace_na(list(
+      wins = 0, losses = 0
+    )) %>% 
+    mutate(win_perc = wins / (wins + losses))
+}
+# results_1617 %>% records_through_dt(ymd("20161025"))
+```
+
+##### Evaluate Model
+```{r evaluate model}
+pre_game_pred = function(home_wp, away_wp) {
+  home_wp = ifelse(is.na(home_wp), 0, home_wp)
+  away_wp = ifelse(is.na(away_wp), 0, away_wp)
+  pred = 0.5 + home_wp - away_wp
+  pred = max(0, pred)
+  pred = min(1, pred)
+  return(pred)
+}
+pre_game_pred = Vectorize(pre_game_pred)
+
+pred_pre_game = function(df, game_date) {
+  records = df %>% 
+    records_through_dt(game_date - 1) %>% 
+    select(team, win_perc)
+  
+  results_1617 %>% 
+    filter(date == game_date) %>% 
+    left_join(
+      records,
+      by = c("Home" = "team")
+    ) %>% 
+    rename(home_win_perc = win_perc) %>% 
+    left_join(
+      records,
+      by = c("Away" = "team")
+    ) %>% 
+    rename(away_win_perc = win_perc) %>% 
+    mutate(home_pre_game_prob = pre_game_pred(home_win_perc, away_win_perc))
+}
+
+score_pre_game_model = function(df) {
+  df %>% 
+    mutate(
+      correct = ifelse(
+        home_pre_game_prob == 0.5,
+        "Too Close",
+        ifelse(
+          (Home_Win == 1 & home_pre_game_prob > 0.5) | (Home_Win == 0 & home_pre_game_prob < 0.5),
+          "Yes",
+          "No"
+        )
+      )
+    )
+}
+
+eval_pre_game_model = function(df_scored) {
+  df_scored %>% 
+    group_by(correct) %>% 
+    summarize(games = n()) %>% 
+    mutate(dist = games / sum(games))
+}
+
+pre_game_results = tibble(
+  through_date = unique(results_1617$date),
+  correct = NA,
+  incorrect = NA,
+  too_close = NA
+)
+for (i in 1:nrow(pre_game_results)) {
+  dt = pre_game_results$through_date[i]
+  temp = tibble(
+    correct = c("Yes", "No", "Too Close")
+  ) %>% 
+    left_join(
+      results_1617 %>% 
+        pred_pre_game(dt) %>% 
+        score_pre_game_model() %>% 
+        eval_pre_game_model()
+    )
+
+  pre_game_results$correct[i] = temp$games[temp$correct == "Yes"]
+  pre_game_results$incorrect[i] = temp$games[temp$correct == "No"]
+  pre_game_results$too_close[i] = temp$games[temp$correct == "Too Close"]
+}
+
+pre_game_results %>% 
+  replace_na(list(
+    correct = 0,
+    incorrect = 0,
+    too_close = 0
+  )) %>% 
+  mutate(
+    games = correct + incorrect + too_close,
+    cum_games = cumsum(games),
+    cum_correct = cumsum(correct),
+    cum_incorrect = cumsum(incorrect),
+    cum_tooclose = cumsum(too_close),
+    perc_correct = cum_correct / cum_games
+  ) %>% 
+  ggplot(., aes(x = through_date, y = perc_correct)) +
+  geom_line()
+
+results_1617 %>% pred_pre_game(ymd("20161025")) %>% score_pre_game_model() 
+results_1617 %>% pred_pre_game(ymd("20161025")) %>% score_pre_game_model() %>% eval_pre_game_model()
+
+```
+
+
+### In-Game Prediction
+#### Version 1
+The in-game model in version 1 will be: (Home Team Score - Away Team Score + 20) / 40 with the probability floored at 0 and capped at 1. Effectively, this will provide a probability of winning of 0 if the home team is down by 20 points or more, a probability of winning of 1 if the home team is winning by 20 points or more, and a straight line of increasing probability between these two points.
+
+### Credibility
+#### Version 1
+The credibility metric in version 1 will simply be: Minutes into the Game / 48, capped at 1 (for overtime games). 
+
+### Predict Outcome
