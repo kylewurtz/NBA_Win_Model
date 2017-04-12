@@ -182,17 +182,58 @@ pre_game_results %>%
     perc_correct = cum_correct / cum_games
   ) %>% 
   ggplot(., aes(x = through_date, y = perc_correct)) +
-  geom_line()
+  geom_line() +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text()) +
+  xlab("Evaluation Date") +
+  ylab("Percentage of Games Correctly Predicted") +
+  scale_y_continuous(labels = percent) +
+  ggtitle("Pre-Game Prediction Accuracy")
 
-results_1617 %>% pred_pre_game(ymd("20161025")) %>% score_pre_game_model() 
-results_1617 %>% pred_pre_game(ymd("20161025")) %>% score_pre_game_model() %>% eval_pre_game_model()
-
+# results_1617 %>% pred_pre_game(ymd("20161025")) %>% score_pre_game_model() 
+# results_1617 %>% pred_pre_game(ymd("20161025")) %>% score_pre_game_model() %>% eval_pre_game_model()
 ```
+
+This extremely simple model appears to flatten out with a predictive accuracy of ~59%. It also appears to take about a month and a half (~330 games in total, or 11 games per team) to be able to predict reasonably well (~57-58% accuracy). After that, the gains in accuracy with more data are minimal. By comparison, Vegas and professional basketball analysts top out at about 70% accuracy for pre-game predictions. 
 
 
 ### In-Game Prediction
 #### Version 1
 The in-game model in version 1 will be: (Home Team Score - Away Team Score + 20) / 40 with the probability floored at 0 and capped at 1. Effectively, this will provide a probability of winning of 0 if the home team is down by 20 points or more, a probability of winning of 1 if the home team is winning by 20 points or more, and a straight line of increasing probability between these two points.
+
+##### Load Data from BigDataBall
+This model requires only two inputs -- the home team score and the away team score. For usage in real time, I'll likely scrape the score from a website, but for evaluating this model I'll use play-by-play data from BigDataBall.com.
+
+```{r read in bigdataball data}
+bdb = read_csv("/Users/kylewurtz/Dropbox/R/NBA Analysis/BigDataBall Data/CSV Files/16-17-pbp-data/[10-25-2016]-[03-20-2017]-combined-stats.csv")
+
+# View(bdb)
+bdb %<>% 
+  mutate(game_id = gsub("=", "", game_id), 
+         game_id = gsub('"', "", game_id), 
+         game_id = as.numeric(game_id))
+```
+
+```{r evaluate first game}
+gm = bdb %>% filter(game_id == 21600001)
+
+score_in_game_model = function(home_score, away_score) {
+  pred = ((home_score - away_score) + 20) / 40
+  pred = min(pred, 1)
+  pred = max(pred, 0)
+  return(pred)
+}
+score_in_game_model = Vectorize(score_in_game_model)
+
+gm %>% 
+  mutate(
+    pred = score_in_game_model(home_score, away_score)
+  ) %>% 
+  select(play_id, home_score, away_score, pred) %>% 
+  ggplot(., aes(x = play_id, y = pred)) +
+  geom_line()
+```
+
 
 ### Credibility
 #### Version 1
