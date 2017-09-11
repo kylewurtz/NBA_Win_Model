@@ -1,0 +1,33 @@
+---
+title: "Pre-Game NBA Model"
+author: "kyle wurtz"
+date: "2017.09.11"
+output: 
+  html_document:
+    toc: true
+    theme: yeti
+    code_folding: show
+---
+
+## Overview
+This file contains the code for Version 1 of the pre-game model.
+
+## Setup
+### Load Packages
+```{r load packages, warning = FALSE, message = FALSE}
+require(tidyverse)
+require(magrittr)
+require(scales)
+require(ggthemes)
+require(stringr)
+require(lubridate)
+```
+
+### Set Up Root Folder
+```{r setup, include=FALSE}
+require(knitr)
+require(rprojroot)
+opts_knit$set(root.dir = rprojroot::find_root("NBA_Win_Model.Rproj"))
+```
+
+## Read in Data
